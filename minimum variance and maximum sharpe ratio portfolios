@@ -1,0 +1,94 @@
+import quandl
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize
+
+# get adjusted closing prices of 5 selected companies with Quandl
+quandl.ApiConfig.api_key = 'e2JYJr66jDYCBYj1MqVY'
+selected = ['CNP', 'F', 'WMT', 'GE', 'TSLA']
+data = quandl.get_table('WIKI/PRICES', ticker = selected,
+                        qopts = { 'columns': ['date', 'ticker', 'adj_close'] },
+                        date = { 'gte': '2014-1-1', 'lte': '2016-12-31' }, paginate=True)
+
+# reorganise data pulled by setting date as index with
+# columns of tickers and their corresponding adjusted prices
+
+
+clean = data.set_index('date')
+table = clean.pivot(columns='ticker')
+
+
+# calculate daily and annual returns of the stocks
+returns_daily = table.pct_change()
+return_annual = returns_daily.mean() * 250
+
+
+# get daily and covariance of returns of the stock
+cov_daily = returns_daily.cov()
+cov_annual = cov_daily * 250
+
+
+R = np.matrix(return_annual) # returns
+V = np.matrix(cov_annual)  # covariance matrix
+
+
+w0= [1/len(selected) for x in range(len(selected))]
+
+
+# min var optimization
+def calculate_portfolio_var(w,V):
+  w = np.matrix(w)
+  return (w*V*w.T)[0,0]
+
+
+# unconstrained portfolio (only sum(w) = 1 )
+cons = ({'type': 'eq', 'fun': lambda x:  np.sum(x)-1.0})
+res= minimize(calculate_portfolio_var, w0, args=V, method='SLSQP',constraints=cons)
+w_g = res.x
+mu_g = w_g*R.T
+var_g = np.dot(w_g*V,w_g)
+
+
+###### print output ######
+for count, weight in enumerate(w_g):
+  print("Weight of "+ selected[count]+ ": %" + str(weight*100))
+
+print("Variance of the minimum-variance portfolio is: %"+ str(var_g.item((0,0))*100) + "\nExpected return of this portfolio is: %" + str(mu_g.item((0,0))*100))
+###### print output ######
+
+# max sharpe ratio optimization
+def calculate_portfolio_sharpe(w,V,R):
+  w = np.matrix(w)
+  Rx = np.matrix(R)
+  return -((w*Rx.T)[0,0] / (w*V*w.T)[0,0])  # for the sake of simplicity risk free rate assumed as zero
+
+
+# unconstrained portfolio (only sum(w) = 1 )
+cons = ({'type': 'eq', 'fun': lambda x:  np.sum(x)-1.0})
+res= minimize(calculate_portfolio_sharpe, w0, args=(V,R), method='SLSQP',constraints=cons)
+wght = res.x
+mu = wght*R.T
+var = np.dot(wght*V,wght)
+
+
+###### print output ######
+for count, weight in enumerate(wght):
+  print("Weight of "+ selected[count]+ ": %" + str(weight*100))
+
+print("Variance of the maximum-sharpe ratio portfolio is: %"+ str(var.item((0,0))*100) + "\nExpected return of this portfolio is: %" + str(mu.item((0,0))*100))
+###### print output ######
+
+
+# find discrete allocation for the given amount of money and return the amount of money left
+# assuming prices as of last closing date
+def allocation(weights,tickers,prices,totalMoney=1000):
+  lot = {}
+  theoMarketCap = [weights[x]*totalMoney for x in range(len(prices))]
+  lotNumbers = [theoMarketCap[x]//prices[x] for x in range(len(prices))]
+  for cnt, ticker in enumerate(tickers):
+    lot[ticker] = lotNumbers[cnt]
+  df = pd.DataFrame(lot)
+  df.to_csv("lots.csv")
+  return "Left money: ",totalMoney- sum([ lotNumbers[x] * prices[x] for x in range(len(prices))])
+###### end of script ######
