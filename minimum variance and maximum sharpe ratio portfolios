@@ -3,20 +3,41 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
+import math
 
-# get adjusted closing prices of 5 selected companies with Quandl
-quandl.ApiConfig.api_key = 'e2JYJr66jDYCBYj1MqVY'
-selected = ['CNP', 'F', 'WMT', 'GE', 'TSLA']
-data = quandl.get_table('WIKI/PRICES', ticker = selected,
-                        qopts = { 'columns': ['date', 'ticker', 'adj_close'] },
-                        date = { 'gte': '2014-1-1', 'lte': '2016-12-31' }, paginate=True)
+
+# get adjusted closing prices BIST equities
+data = pd.read_csv("Düzeltilmiş Fiyat Raporu_2019_3.csv",sep=";",usecols=["TARIH(GG.AA.YYYY) / DATE(DD.MM.YYYY)","CARI KOD / STOCK LAST CODE","DUZELTILMIS KAPANIS FIYATI / ADJUSTED CLOSE PRICE"],thousands=",")
+
+
+selected = data["CARI KOD / STOCK LAST CODE"].unique()
+
+
+data["DUZELTILMIS KAPANIS FIYATI / ADJUSTED CLOSE PRICE"] = data["DUZELTILMIS KAPANIS FIYATI / ADJUSTED CLOSE PRICE"].astype(float)
+
+data["TARIH(GG.AA.YYYY) / DATE(DD.MM.YYYY)"] = pd.to_datetime(data["TARIH(GG.AA.YYYY) / DATE(DD.MM.YYYY)"],format='%d.%m.%Y')
 
 # reorganise data pulled by setting date as index with
 # columns of tickers and their corresponding adjusted prices
+clean = data.set_index('TARIH(GG.AA.YYYY) / DATE(DD.MM.YYYY)')
 
 
-clean = data.set_index('date')
-table = clean.pivot(columns='ticker')
+table = clean.pivot(columns='CARI KOD / STOCK LAST CODE').sort_index()
+
+
+notTradedSirketler = []  # store equity which has no trade in at least one day 
+for sirket in selected:
+  if table["DUZELTILMIS KAPANIS FIYATI / ADJUSTED CLOSE PRICE"][sirket].isnull().values.any():
+    notTradedSirketler.append(sirket)
+    table.drop(("DUZELTILMIS KAPANIS FIYATI / ADJUSTED CLOSE PRICE",sirket),axis = 1, inplace = True)
+
+
+tradedSirketler = table["DUZELTILMIS KAPANIS FIYATI / ADJUSTED CLOSE PRICE"].columns
+
+
+recentPrices= []
+for sirket in tradedSirketler:
+  recentPrices.append(table["DUZELTILMIS KAPANIS FIYATI / ADJUSTED CLOSE PRICE"][sirket][-1])
 
 
 # calculate daily and annual returns of the stocks
@@ -33,7 +54,7 @@ R = np.matrix(return_annual) # returns
 V = np.matrix(cov_annual)  # covariance matrix
 
 
-w0= [1/len(selected) for x in range(len(selected))]
+w0= [1/len(tradedSirketler) for x in range(len(tradedSirketler))]
 
 
 # min var optimization
@@ -42,53 +63,94 @@ def calculate_portfolio_var(w,V):
   return (w*V*w.T)[0,0]
 
 
+cons = np.array([])
+for i in range(len(w0)):
+  con = {'type': 'ineq', 'fun': lambda x, i=i: np.array(x[i])}
+  cons = np.append(cons, con)
+for i in range(len(w0)):
+  con = {'type': 'ineq', 'fun': lambda x, i=i: np.array(-x[i]+1)}
+  cons = np.append(cons, con)
+eqconstrain = {'type': 'eq', 'fun': lambda x:  np.sum(x)-1}
+cons = np.append(cons, eqconstrain)
+
+
+bnds = [(0,1) for x in range(len(w0))]
+
 # unconstrained portfolio (only sum(w) = 1 )
-cons = ({'type': 'eq', 'fun': lambda x:  np.sum(x)-1.0})
-res= minimize(calculate_portfolio_var, w0, args=V, method='SLSQP',constraints=cons)
+res= minimize(calculate_portfolio_var, w0, args=V, method='SLSQP',constraints=cons, bounds=bnds,options={'disp':True})
+
+
+print(res)
+
+
 w_g = res.x
-mu_g = w_g*R.T
+mu_g = w_g.dot(R.T)
 var_g = np.dot(w_g*V,w_g)
 
 
-###### print output ######
-for count, weight in enumerate(w_g):
-  print("Weight of "+ selected[count]+ ": %" + str(weight*100))
+#for count, weight in enumerate(w_g):
+  #print("Weight of "+ selected[count]+ ": ",weight)
 
-print("Variance of the minimum-variance portfolio is: %"+ str(var_g.item((0,0))*100) + "\nExpected return of this portfolio is: %" + str(mu_g.item((0,0))*100))
-###### print output ######
+df = pd.DataFrame(w_g)
+df["equity code"] = tradedSirketler
+df.columns = ["weight","equity code"]
+df.to_csv("minimum variance.csv")
+
+
+print("Variance of the minimum-variance portfolio is: ", var_g.item((0,0)), "\nExpected return of this portfolio is: ", mu_g.item((0,0)))
+###########################################################################
+
 
 # max sharpe ratio optimization
 def calculate_portfolio_sharpe(w,V,R):
   w = np.matrix(w)
   Rx = np.matrix(R)
-  return -((w*Rx.T)[0,0] / (w*V*w.T)[0,0])  # for the sake of simplicity risk free rate assumed as zero
+  return -(w.dot(Rx.T))[0,0] / np.sqrt(w.dot(V).dot(w.T)[0,0])  # for the sake of simplicity risk free rate assumed as zero, makes no difference
 
 
 # unconstrained portfolio (only sum(w) = 1 )
-cons = ({'type': 'eq', 'fun': lambda x:  np.sum(x)-1.0})
-res= minimize(calculate_portfolio_sharpe, w0, args=(V,R), method='SLSQP',constraints=cons)
+res= minimize(calculate_portfolio_sharpe, w0, args=(V,R), method='SLSQP',constraints=cons,bounds=bnds,options={'disp':True})
+
+
+print(res)
+
+
 wght = res.x
 mu = wght*R.T
 var = np.dot(wght*V,wght)
 
 
-###### print output ######
-for count, weight in enumerate(wght):
-  print("Weight of "+ selected[count]+ ": %" + str(weight*100))
+#for count, weight in enumerate(wght):
+  #print("Weight of "+ selected[count]+ ": ",weight)
 
-print("Variance of the maximum-sharpe ratio portfolio is: %"+ str(var.item((0,0))*100) + "\nExpected return of this portfolio is: %" + str(mu.item((0,0))*100))
-###### print output ######
+
+df1 = pd.DataFrame(wght)
+df1["equity code"] = tradedSirketler
+df1.columns = ["weight","equity code"]
+df1.to_csv("maximum sharpe ratio.csv")
+
+
+print("Variance of the maximum sharpe ratio portfolio is: ", var.item((0,0)), "\nExpected return of this portfolio is: ", mu.item((0,0)))
+###########################################################################
 
 
 # find discrete allocation for the given amount of money and return the amount of money left
 # assuming prices as of last closing date
-def allocation(weights,tickers,prices,totalMoney=1000):
+def allocation(weights,tickers,prices,totalMoney):
   lot = {}
   theoMarketCap = [weights[x]*totalMoney for x in range(len(prices))]
   lotNumbers = [theoMarketCap[x]//prices[x] for x in range(len(prices))]
   for cnt, ticker in enumerate(tickers):
     lot[ticker] = lotNumbers[cnt]
-  df = pd.DataFrame(lot)
+  df = pd.DataFrame(list(lot.values()))
+  df["equity code"] = tickers
+  df["weight"] = weights
+  df["theoretical purchase value"] = theoMarketCap
+  df["last prices"] = prices
+  df.columns = ["lot","equity code","weight","theoretical purchase value","last prices"]
+  df["total Money"] = totalMoney
   df.to_csv("lots.csv")
-  return "Left money: ",totalMoney- sum([ lotNumbers[x] * prices[x] for x in range(len(prices))])
-###### end of script ######
+  return "Left money: ",(totalMoney- sum([ lotNumbers[x] * prices[x] for x in range(len(prices))]))
+
+
+print(allocation(wght,tradedSirketler,recentPrices,100000))
